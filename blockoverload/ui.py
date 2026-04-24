@@ -151,10 +151,7 @@ class BoardWidget(Widget):
         px, py = self._drag_pos
         anchor_row, anchor_col = self._pixel_to_cell(px, py)
 
-        valid = all(
-            self.state.can_place(self._drag_tray_idx, anchor_row, anchor_col)
-            for _ in [1]  # single check
-        )
+        valid = self.state.can_place(self._drag_tray_idx, anchor_row, anchor_col)
         alpha = 0.85 if valid else 0.40
         colour = list(self._drag_colour)  # type: ignore[arg-type]
         colour[3] = alpha

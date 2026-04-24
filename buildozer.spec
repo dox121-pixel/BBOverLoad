@@ -17,7 +17,7 @@ version = 1.0.0
 entrypoint = blockoverload.main
 
 # Requirements: kivy + its runtime dependencies
-requirements = python3,kivy==2.3.0,kivymd
+requirements = python3,kivy==2.3.0
 
 # Orientation
 orientation = portrait
