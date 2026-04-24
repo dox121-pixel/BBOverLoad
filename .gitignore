@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+
+# Output directories created by BBOverLoad
+output/
+
+# APK files (often large binaries – commit intentionally if needed)
+*.apk
+*.aab
+
+# Keystore files (never commit secrets)
+*.jks
+*.keystore
+
+# Logs
+*.log
+
+# OS artefacts
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.idea/
+.vscode/
+*.swp
