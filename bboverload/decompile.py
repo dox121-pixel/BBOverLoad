@@ -3,13 +3,21 @@
 Supports two modes:
   * smali  – uses apktool to decode resources and smali bytecode.
   * java   – uses jadx to produce readable Java source code.
+
+XAPK support:
+  XAPK files (used by APKPure) are ZIP archives that contain one or more APK
+  split files plus a ``manifest.json``.  When an ``.xapk`` path is passed to
+  :func:`decompile`, the archive is first extracted and every APK inside is
+  decompiled into its own sub-directory of *output_dir*.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -123,6 +131,123 @@ def decompile_java(
     return output_dir
 
 
+def extract_xapk(
+    xapk_path: Path,
+    extract_dir: Path,
+) -> tuple[list[Path], dict]:
+    """Extract an XAPK archive and return the list of APK paths and manifest.
+
+    An XAPK is a ZIP file produced by APKPure that contains one or more APK
+    split files and a ``manifest.json``.  This function extracts everything
+    into *extract_dir* and returns the APK paths and the parsed manifest dict.
+
+    Parameters
+    ----------
+    xapk_path:
+        Path to the ``.xapk`` file.
+    extract_dir:
+        Directory into which the archive is extracted.
+
+    Returns
+    -------
+    tuple[list[Path], dict]
+        A list of extracted APK paths and the parsed ``manifest.json`` dict.
+
+    Raises
+    ------
+    FileNotFoundError
+        If *xapk_path* does not exist.
+    ValueError
+        If the file is not a valid ZIP / XAPK archive.
+    """
+    xapk_path = Path(xapk_path).resolve()
+    if not xapk_path.is_file():
+        raise FileNotFoundError(f"XAPK not found: {xapk_path}")
+
+    extract_dir = Path(extract_dir).resolve()
+    extract_dir.mkdir(parents=True, exist_ok=True)
+
+    if not zipfile.is_zipfile(xapk_path):
+        raise ValueError(f"'{xapk_path}' is not a valid ZIP/XAPK file.")
+
+    with zipfile.ZipFile(xapk_path, "r") as zf:
+        zf.extractall(extract_dir)
+
+    manifest: dict = {}
+    manifest_path = extract_dir / "manifest.json"
+    if manifest_path.is_file():
+        with open(manifest_path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+
+    apk_paths = sorted(extract_dir.glob("*.apk"))
+    logger.info("Extracted %d APK(s) from XAPK → %s", len(apk_paths), extract_dir)
+    return apk_paths, manifest
+
+
+def decompile_xapk(
+    xapk_path: Path,
+    output_dir: Path,
+    mode: str = "smali",
+    *,
+    decode_resources: bool = True,
+) -> Path:
+    """Decompile all APKs inside an XAPK archive.
+
+    The XAPK is first extracted into ``<output_dir>/_extracted/`` and then
+    each APK is decompiled into its own sub-directory inside *output_dir*.
+    The XAPK ``manifest.json`` and ``icon.png`` (if present) are copied to
+    *output_dir* as well.
+
+    Parameters
+    ----------
+    xapk_path:
+        Path to the ``.xapk`` file.
+    output_dir:
+        Root output directory.  Sub-directories are created per APK.
+    mode:
+        ``"smali"`` (default) or ``"java"``.
+    decode_resources:
+        Passed through to :func:`decompile_smali` (ignored in java mode).
+
+    Returns
+    -------
+    Path
+        The *output_dir* containing all decompiled sub-projects.
+
+    Raises
+    ------
+    RuntimeError
+        If apktool / jadx is not on PATH.
+    FileNotFoundError
+        If *xapk_path* does not exist.
+    """
+    xapk_path = Path(xapk_path).resolve()
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    extract_dir = output_dir / "_extracted"
+    apk_paths, manifest = extract_xapk(xapk_path, extract_dir)
+
+    # Copy metadata files to output root for reference
+    for name in ("manifest.json", "icon.png"):
+        src = extract_dir / name
+        if src.is_file():
+            shutil.copy2(src, output_dir / name)
+
+    mode = mode.lower()
+    for apk_path in apk_paths:
+        stem = apk_path.stem
+        if mode == "java":
+            apk_out = output_dir / f"{stem}-java"
+            decompile_java(apk_path, apk_out)
+        else:
+            apk_out = output_dir / stem
+            decompile_smali(apk_path, apk_out, decode_resources=decode_resources)
+
+    logger.info("XAPK decompilation complete → %s", output_dir)
+    return output_dir
+
+
 def decompile(
     apk_path: Path,
     output_dir: Path | None = None,
@@ -132,10 +257,13 @@ def decompile(
 ) -> Path:
     """High-level entry point for decompilation.
 
+    Accepts both ``.apk`` and ``.xapk`` input files.  When given an XAPK
+    file, all split APKs inside are decompiled via :func:`decompile_xapk`.
+
     Parameters
     ----------
     apk_path:
-        Path to the ``.apk`` file to decompile.
+        Path to the ``.apk`` or ``.xapk`` file to decompile.
     output_dir:
         Destination directory.  Defaults to ``output/<apk_stem>/``.
     mode:
@@ -146,11 +274,17 @@ def decompile(
     Returns
     -------
     Path
-        Directory containing the decompiled project.
+        Directory containing the decompiled project(s).
     """
     apk_path = Path(apk_path)
     if output_dir is None:
         output_dir = Path("output") / apk_path.stem
+
+    # XAPK path – decompile every split APK inside
+    if apk_path.suffix.lower() == ".xapk":
+        return decompile_xapk(
+            apk_path, output_dir, mode=mode, decode_resources=decode_resources
+        )
 
     mode = mode.lower()
     if mode == "smali":
