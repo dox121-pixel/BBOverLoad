@@ -10,7 +10,7 @@ import click
 
 from bboverload import __version__
 from bboverload.decompile import decompile
-from bboverload.recompile import recompile
+from bboverload.recompile import recompile, recompile_xapk
 from bboverload.sign import sign as _sign
 
 logging.basicConfig(
@@ -54,7 +54,11 @@ def cli() -> None:
     help="Skip resource decoding (smali mode only).",
 )
 def decompile_cmd(apk_path: Path, mode: str, output_dir: Path | None, no_res: bool) -> None:
-    """Decompile APK_PATH into an editable project."""
+    """Decompile APK_PATH (or an XAPK archive) into an editable project.
+
+    When an XAPK file is supplied every split APK it contains is decompiled
+    into its own sub-directory of the output directory.
+    """
     try:
         result = decompile(
             apk_path,
@@ -89,6 +93,37 @@ def recompile_cmd(project_dir: Path, output_dir: Path | None) -> None:
     try:
         result = recompile(project_dir, output_dir=output_dir)
         click.echo(f"✓ Rebuilt APK: {result}")
+    except (RuntimeError, FileNotFoundError) as exc:
+        click.echo(f"✗ {exc}", err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# recompile-xapk
+# ---------------------------------------------------------------------------
+
+@cli.command("recompile-xapk")
+@click.argument(
+    "xapk_project_dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+)
+@click.option(
+    "--output",
+    "output_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Output directory for the rebuilt XAPK (default: <XAPK_PROJECT_DIR>/dist/).",
+)
+def recompile_xapk_cmd(xapk_project_dir: Path, output_dir: Path | None) -> None:
+    """Repackage an XAPK_PROJECT_DIR (from 'decompile' on an XAPK) back into a .xapk archive.
+
+    All apktool sub-projects inside XAPK_PROJECT_DIR are rebuilt with apktool
+    and the resulting APKs are packaged together with the original manifest.json
+    and icon.png into a new .xapk file.
+    """
+    try:
+        result = recompile_xapk(xapk_project_dir, output_dir=output_dir)
+        click.echo(f"✓ Rebuilt XAPK: {result}")
     except (RuntimeError, FileNotFoundError) as exc:
         click.echo(f"✗ {exc}", err=True)
         sys.exit(1)

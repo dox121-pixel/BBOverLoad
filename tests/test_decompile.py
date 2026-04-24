@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import io
+import json
 import subprocess
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from bboverload.decompile import decompile, decompile_java, decompile_smali
+from bboverload.decompile import (
+    decompile,
+    decompile_java,
+    decompile_smali,
+    decompile_xapk,
+    extract_xapk,
+)
 
 
 class TestRequireTool:
@@ -152,3 +161,96 @@ class TestDecompileDispatch:
 
         called_output_dir = mock_smali.call_args[0][1]
         assert called_output_dir == Path("output") / "mygame"
+
+    def test_xapk_dispatches_to_decompile_xapk(self, tmp_path):
+        """decompile() must call decompile_xapk for .xapk files."""
+        xapk = tmp_path / "game.xapk"
+        xapk.write_bytes(b"PK\x03\x04")
+
+        with patch("bboverload.decompile.decompile_xapk") as mock_xapk:
+            mock_xapk.return_value = tmp_path / "out"
+            decompile(xapk)
+        mock_xapk.assert_called_once()
+
+
+def _make_xapk(path: Path, apk_names: list[str], include_manifest: bool = True) -> None:
+    """Helper: build a minimal XAPK (ZIP) with stub APKs and optional manifest."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name in apk_names:
+            zf.writestr(name, b"PK\x03\x04stub")
+        if include_manifest:
+            manifest = {
+                "package_name": "com.example.test",
+                "version_name": "1.0",
+                "split_apks": [{"file": n, "id": n.replace(".apk", "")} for n in apk_names],
+            }
+            zf.writestr("manifest.json", json.dumps(manifest))
+        zf.writestr("icon.png", b"\x89PNG\r\n\x1a\n")
+    path.write_bytes(buf.getvalue())
+
+
+class TestExtractXapk:
+    def test_missing_xapk_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="XAPK not found"):
+            extract_xapk(tmp_path / "missing.xapk", tmp_path / "out")
+
+    def test_invalid_zip_raises(self, tmp_path):
+        bad = tmp_path / "bad.xapk"
+        bad.write_bytes(b"not a zip")
+        with pytest.raises(ValueError, match="not a valid ZIP"):
+            extract_xapk(bad, tmp_path / "out")
+
+    def test_extracts_apks_and_returns_paths(self, tmp_path):
+        xapk = tmp_path / "game.xapk"
+        _make_xapk(xapk, ["base.apk", "config.arm64.apk"])
+
+        apk_paths, manifest = extract_xapk(xapk, tmp_path / "out")
+
+        assert len(apk_paths) == 2
+        assert all(p.suffix == ".apk" for p in apk_paths)
+        assert manifest["package_name"] == "com.example.test"
+
+    def test_no_manifest_returns_empty_dict(self, tmp_path):
+        xapk = tmp_path / "game.xapk"
+        _make_xapk(xapk, ["base.apk"], include_manifest=False)
+
+        _, manifest = extract_xapk(xapk, tmp_path / "out")
+        assert manifest == {}
+
+
+class TestDecompileXapk:
+    def test_missing_xapk_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            decompile_xapk(tmp_path / "missing.xapk", tmp_path / "out")
+
+    def test_decompiles_all_splits(self, tmp_path):
+        xapk = tmp_path / "game.xapk"
+        _make_xapk(xapk, ["base.apk", "config.en.apk"])
+        out = tmp_path / "out"
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+
+        with patch("shutil.which", return_value="/usr/bin/apktool"), \
+             patch("subprocess.run", return_value=mock_result) as mock_run:
+            returned = decompile_xapk(xapk, out)
+
+        # apktool should have been called once per APK
+        assert mock_run.call_count == 2
+        assert returned == out
+
+    def test_icon_and_manifest_copied_to_output(self, tmp_path):
+        xapk = tmp_path / "game.xapk"
+        _make_xapk(xapk, ["base.apk"])
+        out = tmp_path / "out"
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+
+        with patch("shutil.which", return_value="/usr/bin/apktool"), \
+             patch("subprocess.run", return_value=mock_result):
+            decompile_xapk(xapk, out)
+
+        assert (out / "manifest.json").is_file()
+        assert (out / "icon.png").is_file()
